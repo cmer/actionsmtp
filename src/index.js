@@ -11,6 +11,9 @@ const path = require('path');
 const yaml = require('js-yaml');
 const os = require('os');
 
+// Load package.json to get version
+const packageJson = require('../package.json');
+
 // Parse command line arguments
 const args = process.argv.slice(2);
 let configPath = process.env.ACTIONSMTP_CONFIG_PATH || 'config.yml';
@@ -698,6 +701,7 @@ server.on('error', (err) => {
 // Start server
 server.listen(config.port, config.host, () => {
   log('=== ActionSMTP Server Starting ===');
+  log(`Version: ${packageJson.version}`);
   log(`Listening on: ${config.host}:${config.port}`);
   log(`Server hostname: ${config.hostname}`);
   log(`Max message size: ${Math.round(config.maxSize / 1024 / 1024)}MB`);
@@ -715,7 +719,7 @@ server.listen(config.port, config.host, () => {
   if (config.spamCheck) {
     log(`Spam filtering: enabled`);
     log(`  SpamAssassin: ${config.spamHost}:${config.spamPort}`);
-    log(`  DNSBL services: ${DNSBL_SERVICES.join(', ')}`);
+    log(`  DNSBL services: ${config.dnsbl.servers.join(', ')}`);
     log(`  Spam threshold: ${config.spamThreshold} (flag), ${config.spamReject} (reject)`);
   } else {
     log('Spam filtering: disabled');
