@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2025-07-02
+
+### Fixed
+- Fixed unhandled promise rejection errors from DNSBL DNS queries
+- Improved DNS resolver reliability by creating new instances per query
+- Added global error handler to filter expected ENOTFOUND responses from DNSBL checks
+
 ## [1.2.1] - 2025-07-02
 
 ### Added

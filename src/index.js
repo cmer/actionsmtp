@@ -5,6 +5,7 @@ const { simpleParser } = require('mailparser');
 const fetch = require('node-fetch');
 const { Writable } = require('stream');
 const dns = require('dns').promises;
+const { Resolver } = require('dns');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
@@ -13,6 +14,18 @@ const os = require('os');
 
 // Load package.json to get version
 const packageJson = require('../package.json');
+
+// Global unhandled rejection handler to filter out expected DNS errors
+process.on('unhandledRejection', (reason, promise) => {
+  // Filter out expected DNSBL DNS errors (ENOTFOUND is normal for clean IPs)
+  if (reason && reason.code === 'ENOTFOUND') {
+    // This is an expected DNSBL response indicating IP is not listed - silently ignore
+    return;
+  }
+  
+  // Log other unhandled rejections
+  console.error('[ERROR] Unhandled rejection', reason, promise);
+});
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -244,24 +257,28 @@ async function checkDNSBL(ip) {
   debug(`Starting DNSBL check for IP: ${ip}`);
   const reversedIP = ip.split('.').reverse().join('.');
   
-  // Create custom resolver with fallback DNS servers
-  const resolver = new dns.Resolver();
-  
   const checks = config.dnsbl.servers.map(async (blacklist) => {
     const hostname = `${reversedIP}.${blacklist}`;
     
     // Try each DNS server until one succeeds
     for (const dnsServer of config.dnsbl.dnsServers) {
       try {
+        // Create a new resolver for each query to avoid state issues
+        const resolver = new Resolver();
         resolver.setServers([dnsServer]);
-        const result = await new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error('DNS timeout')), config.dnsbl.timeout);
-          resolver.resolve4(hostname, (err, addresses) => {
-            clearTimeout(timeout);
-            if (err) reject(err);
-            else resolve(addresses);
-          });
-        });
+        
+        // Use promisified resolver with timeout
+        const result = await Promise.race([
+          new Promise((resolve, reject) => {
+            resolver.resolve4(hostname, (err, addresses) => {
+              if (err) reject(err);
+              else resolve(addresses);
+            });
+          }),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('DNS timeout')), config.dnsbl.timeout)
+          )
+        ]);
         
         // If resolve succeeds, IP is listed
         debug(`IP ${ip} listed on ${blacklist} via DNS ${dnsServer} - result: ${result.join(', ')}`);
