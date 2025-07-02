@@ -46,6 +46,17 @@ spam:
     host: "localhost"
     port: 783
     
+  # DNSBL (DNS Blacklist) Settings
+  dnsbl:
+    enabled: true
+    servers:
+      - "zen.spamhaus.org"    # Spamhaus combined list
+      - "bl.spamcop.net"      # SpamCop blacklist
+    timeout: 3000             # DNS query timeout in milliseconds per server
+    dns_servers:              # DNS servers (used as fallbacks if first fails)
+      - "8.8.8.8"             # Google DNS primary
+      - "8.8.4.4"             # Google DNS secondary
+    
   # Spam Thresholds
   thresholds:
     flag: 5.0      # Score at which to flag as spam

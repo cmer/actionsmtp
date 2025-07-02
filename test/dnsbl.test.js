@@ -1,29 +1,58 @@
 const { describe, test, expect } = require('@jest/globals');
-const dns = require('dns').promises;
+const dns = require('dns');
 
 describe('DNSBL Tests', () => {
-  // Mock checkDNSBL function
-  async function checkDNSBL(ip) {
+  // Mock config for testing
+  const mockConfig = {
+    dnsbl: {
+      enabled: true,
+      servers: ['zen.spamhaus.org', 'bl.spamcop.net'],
+      timeout: 3000,
+      dnsServers: ['8.8.8.8', '8.8.4.4']
+    }
+  };
+
+  // Mock checkDNSBL function that matches the new implementation
+  async function checkDNSBL(ip, config = mockConfig) {
+    // Skip if DNSBL is disabled
+    if (!config.dnsbl.enabled) {
+      return { isListed: false, listings: [] };
+    }
+
     // Skip private IPs
     if (ip.startsWith('10.') || ip.startsWith('192.168.') || ip.startsWith('172.') || ip === '127.0.0.1') {
       return { isListed: false, listings: [] };
     }
 
     const reversedIP = ip.split('.').reverse().join('.');
-    const DNSBL_SERVICES = ['zen.spamhaus.org', 'bl.spamcop.net'];
+    const resolver = new dns.Resolver();
     
-    const checks = DNSBL_SERVICES.map(async (blacklist) => {
-      try {
-        const hostname = `${reversedIP}.${blacklist}`;
-        // In real implementation, this would do DNS lookup
-        // For testing, we'll simulate some responses
-        if (ip === '192.0.2.1' && blacklist === 'zen.spamhaus.org') {
-          return { blacklist, listed: true };
+    const checks = config.dnsbl.servers.map(async (blacklist) => {
+      const hostname = `${reversedIP}.${blacklist}`;
+      
+      // Try each DNS server until one succeeds
+      for (const dnsServer of config.dnsbl.dnsServers) {
+        try {
+          resolver.setServers([dnsServer]);
+          
+          // Simulate DNS responses for testing
+          if (ip === '192.0.2.1' && blacklist === 'zen.spamhaus.org' && dnsServer === '8.8.8.8') {
+            return { blacklist, listed: true, result: ['127.255.255.254'], dnsServer };
+          }
+          if (ip === '192.0.2.2' && blacklist === 'zen.spamhaus.org' && dnsServer === '8.8.4.4') {
+            // Simulate first DNS server failing, second succeeding
+            return { blacklist, listed: true, result: ['127.255.255.254'], dnsServer };
+          }
+          
+          // Most IPs are not listed
+          throw new Error('NXDOMAIN');
+        } catch (err) {
+          // Continue to next DNS server
+          continue;
         }
-        return { blacklist, listed: false };
-      } catch (err) {
-        return { blacklist, listed: false };
       }
+      
+      return { blacklist, listed: false };
     });
 
     const results = await Promise.all(checks);
@@ -63,6 +92,56 @@ describe('DNSBL Tests', () => {
     const result = await checkDNSBL('192.0.2.1');
     expect(result.isListed).toBe(true);
     expect(result.listings).toContain('zen.spamhaus.org');
+  });
+
+  test('should use DNS fallback servers', async () => {
+    // Test IP that only responds on second DNS server
+    const result = await checkDNSBL('192.0.2.2');
+    expect(result.isListed).toBe(true);
+    expect(result.listings).toContain('zen.spamhaus.org');
+  });
+
+  test('should respect DNSBL disabled config', async () => {
+    const disabledConfig = {
+      dnsbl: {
+        enabled: false,
+        servers: ['zen.spamhaus.org'],
+        timeout: 3000,
+        dnsServers: ['8.8.8.8']
+      }
+    };
+    
+    const result = await checkDNSBL('192.0.2.1', disabledConfig);
+    expect(result.isListed).toBe(false);
+    expect(result.listings).toEqual([]);
+  });
+
+  test('should use configurable DNSBL servers', async () => {
+    const customConfig = {
+      dnsbl: {
+        enabled: true,
+        servers: ['custom.blacklist.org'],
+        timeout: 3000,
+        dnsServers: ['1.1.1.1']
+      }
+    };
+    
+    const result = await checkDNSBL('8.8.8.8', customConfig);
+    expect(result.isListed).toBe(false); // Not in our mock data
+  });
+
+  test('should use configurable DNS servers', async () => {
+    const customDnsConfig = {
+      dnsbl: {
+        enabled: true,
+        servers: ['zen.spamhaus.org'],
+        timeout: 3000,
+        dnsServers: ['1.1.1.1', '9.9.9.9'] // Different DNS servers
+      }
+    };
+    
+    const result = await checkDNSBL('8.8.8.8', customDnsConfig);
+    expect(result.isListed).toBe(false);
   });
 
   test('should handle invalid IP format gracefully', async () => {

@@ -105,7 +105,13 @@ try {
     spamPort: yamlConfig.spam?.spamassassin?.port || 783,
     spamThreshold: yamlConfig.spam?.thresholds?.flag || 5.0,
     spamReject: yamlConfig.spam?.thresholds?.reject || 10.0,
-    spamAction: 'flag'
+    spamAction: 'flag',
+    dnsbl: {
+      enabled: yamlConfig.spam?.dnsbl?.enabled !== false,
+      servers: yamlConfig.spam?.dnsbl?.servers || ['zen.spamhaus.org', 'bl.spamcop.net'],
+      timeout: yamlConfig.spam?.dnsbl?.timeout || 3000,
+      dnsServers: yamlConfig.spam?.dnsbl?.dns_servers || ['8.8.8.8', '8.8.4.4']
+    }
   };
   
   // Validate required fields
@@ -216,14 +222,16 @@ const logWebhookResult = (session, success, responseStatus, errorDetails = null)
   }
 };
 
-// Fast, reliable DNSBL services
-const DNSBL_SERVICES = [
-  'zen.spamhaus.org',  // Highly reliable, combines multiple lists
-  'bl.spamcop.net'     // Fast and efficient
-];
+// DNSBL services are now configured via config.dnsbl.servers
 
-// Check IP against DNS blacklists
+// Check IP against DNS blacklists using configurable DNS servers
 async function checkDNSBL(ip) {
+  // Skip if DNSBL is disabled
+  if (!config.dnsbl.enabled) {
+    debug(`DNSBL checks disabled`);
+    return { isListed: false, listings: [] };
+  }
+
   // Skip private IPs
   if (ip.startsWith('10.') || ip.startsWith('192.168.') || ip.startsWith('172.') || ip === '127.0.0.1') {
     debug(`Skipping DNSBL check for private IP: ${ip}`);
@@ -232,26 +240,42 @@ async function checkDNSBL(ip) {
 
   debug(`Starting DNSBL check for IP: ${ip}`);
   const reversedIP = ip.split('.').reverse().join('.');
-  const checks = DNSBL_SERVICES.map(async (blacklist) => {
-    try {
-      const hostname = `${reversedIP}.${blacklist}`;
-      await dns.resolve4(hostname);
-      // If resolve succeeds, IP is listed
-      debug(`IP ${ip} listed on ${blacklist}`);
-      return { blacklist, listed: true };
-    } catch (err) {
-      // NXDOMAIN means not listed
-      debug(`IP ${ip} not listed on ${blacklist}`);
-      return { blacklist, listed: false };
+  
+  // Create custom resolver with fallback DNS servers
+  const resolver = new dns.Resolver();
+  
+  const checks = config.dnsbl.servers.map(async (blacklist) => {
+    const hostname = `${reversedIP}.${blacklist}`;
+    
+    // Try each DNS server until one succeeds
+    for (const dnsServer of config.dnsbl.dnsServers) {
+      try {
+        resolver.setServers([dnsServer]);
+        const result = await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('DNS timeout')), config.dnsbl.timeout);
+          resolver.resolve4(hostname, (err, addresses) => {
+            clearTimeout(timeout);
+            if (err) reject(err);
+            else resolve(addresses);
+          });
+        });
+        
+        // If resolve succeeds, IP is listed
+        debug(`IP ${ip} listed on ${blacklist} via DNS ${dnsServer} - result: ${result.join(', ')}`);
+        return { blacklist, listed: true, result, dnsServer };
+      } catch (err) {
+        debug(`IP ${ip} check on ${blacklist} via DNS ${dnsServer} failed: ${err.code || err.message}`);
+        // Continue to next DNS server
+      }
     }
+    
+    // All DNS servers failed for this blacklist
+    debug(`IP ${ip} not listed on ${blacklist} (all DNS servers failed or returned NXDOMAIN)`);
+    return { blacklist, listed: false };
   });
 
   try {
-    const results = await Promise.race([
-      Promise.all(checks),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('DNSBL timeout')), 3000))
-    ]);
-    
+    const results = await Promise.all(checks);
     const listings = results.filter(r => r.listed);
     const result = {
       isListed: listings.length > 0,
@@ -623,11 +647,7 @@ const server = new SMTPServer({
           try {
             spamResult = await checkSpamAssassin(rawEmail);
             
-            // Add DNSBL penalty to spam score
-            if (session.dnsblResult && session.dnsblResult.isListed) {
-              spamResult.score += 3.0 * session.dnsblResult.listings.length;
-              spamResult.tests.push(`DNSBL_LISTED(${session.dnsblResult.listings.join(',')})`);
-            }
+            // DNSBL-listed IPs are rejected at connection time, so this code is unreachable
             
             logSpamCheck(session, spamResult, session.dnsblResult || { isListed: false, listings: [] });
             
